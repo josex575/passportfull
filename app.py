@@ -1,168 +1,73 @@
 import streamlit as st
-from PIL import Image, ImageOps, ImageFilter, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import numpy as np
-import cv2
 import io
 
-st.set_page_config(page_title="AI Passport Photo Maker", layout="centered")
-st.title("AI Passport Photo Maker — Cloud Friendly")
-st.markdown("Auto-crop + background removal + manual crop sliders. Works on Streamlit Cloud.")
+st.set_page_config(page_title="Interactive Passport Crop", layout="centered")
+st.title("Interactive Passport Photo Crop Tool with Live Rectangle Overlay")
 
-# ---------------- UI ----------------
-photo_type = st.selectbox("Photo Type", ["Without Beard", "With Beard"])
-subject_type = st.selectbox("Subject Type", ["Man", "Woman", "Baby"])
-uploaded = st.file_uploader("Upload your portrait photo", type=["jpg","jpeg","png"])
-
-dpi = st.selectbox("DPI for print", [300, 350, 400], index=0)
-make_sheet = st.checkbox("Generate 4×6 print sheet", value=True)
+uploaded = st.file_uploader("Upload your photo", type=["jpg","jpeg","png"])
 
 # ---------------- Helpers ----------------
-def pil_to_cv(img):
-    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-
-def cv_to_pil(img):
-    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-
-def detect_face(img):
-    gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-    if len(faces) == 0:
-        return None
-    return max(faces, key=lambda r: r[2]*r[3])
-
-def ai_crop(img, face_box, subject_type, beard=False):
-    x,y,w,h = face_box
-    img_w,img_h = img.size
-    top=int(h*0.9); bottom=int(h*0.45); sides=int(w*0.55)
-    if beard: bottom+=int(h*0.25)
-    if subject_type=="Woman": top=int(h*1.2); sides=int(w*0.7); bottom=int(h*0.45)
-    if subject_type=="Baby": top=int(h*0.7); sides=int(w*0.45); bottom=int(h*0.5)
-    x1=max(0,x-sides); y1=max(0,y-top)
-    x2=min(img_w,x+w+sides); y2=min(img_h,y+h+bottom)
-    cropped = img.crop((x1,y1,x2,y2))
-    # Pad to 4:5 ratio
-    cw,ch = cropped.size
-    target_ratio=4/5
-    if cw/ch>target_ratio:
-        new_h=int(round(cw/target_ratio)); pad=new_h-ch
-        cropped = ImageOps.expand(cropped,border=(0,pad//2),fill="white")
-    else:
-        new_w=int(round(ch*target_ratio)); pad=new_w-cw
-        cropped = ImageOps.expand(cropped,border=(pad//2,0),fill="white")
-    return cropped
-
-def grabcut_bg(img, face_box):
-    arr = np.array(img.convert("RGB"))
-    h,w = arr.shape[:2]
-    fx, fy, fw, fh = face_box
-    pad_x = int(fw*0.9)
-    pad_y_top = int(fh*1.0)
-    pad_y_bottom = int(fh*1.2)
-    rect = (max(0, fx-pad_x), max(0, fy-pad_y_top),
-            min(w-1, fx+fw+pad_x)-max(0, fx-pad_x),
-            min(h-1, fy+fh+pad_y_bottom)-max(0, fy-pad_y_top))
-    mask = np.zeros(arr.shape[:2], np.uint8)
-    bgd = np.zeros((1,65), np.float64)
-    fgd = np.zeros((1,65), np.float64)
-    try:
-        cv2.grabCut(arr, mask, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
-        mask2 = np.where((mask==2)|(mask==0),0,1).astype('uint8')
-        mask_f = cv2.GaussianBlur(mask2.astype(np.float32),(7,7),0)[...,np.newaxis]
-        white_bg = np.ones_like(arr)*255
-        comp = (arr*mask_f + white_bg*(1-mask_f)).astype(np.uint8)
-        return Image.fromarray(comp)
-    except Exception as e:
-        st.warning("Background removal failed. Returning original with white background.")
-        return Image.new("RGB", img.size, "white")
-
-def enhance(img):
-    img = ImageOps.autocontrast(img,cutoff=1)
-    img = img.filter(ImageFilter.UnsharpMask(radius=1,percent=120,threshold=3))
+def resize_large(img, max_dim=1200):
+    if max(img.size) > max_dim:
+        scale = max_dim / max(img.size)
+        new_w = int(img.width * scale)
+        new_h = int(img.height * scale)
+        return img.resize((new_w,new_h), Image.LANCZOS)
     return img
 
-def add_border(img,color=(120,120,120),width=1):
+def add_border(img, color=(120,120,120), width=1):
     draw = ImageDraw.Draw(img)
     w,h = img.size
     draw.rectangle([0.5,0.5,w-0.5,h-0.5], outline=color, width=width)
     return img
 
-def manual_crop(img):
-    st.subheader("Manual Crop (Original)")
-    w,h = img.size
-    left=st.slider("Left",0,w-1,0)
-    top=st.slider("Top",0,h-1,0)
-    crop_w=st.slider("Width",50,w-left,min(300,w-left))
-    crop_h=st.slider("Height",50,h-top,min(300,h-top))
-    cropped = img.crop((left,top,left+crop_w,top+crop_h))
-    st.image(cropped,caption="Preview",use_column_width=True)
-    return cropped
+def apply_crop_with_white(img, left, top, right, bottom):
+    w, h = img.size
+    # Create white background
+    bg = Image.new("RGB", (w,h), "white")
+    # Paste the cropped area
+    crop_box = img.crop((left, top, right, bottom))
+    bg.paste(crop_box, (left, top))
+    return bg.crop((left, top, right, bottom))
 
-def generate_sheet(single_img, unit_w, unit_h, sheet_inches=(4,6), dpi=300):
-    sheet_w=int(round(sheet_inches[0]*dpi))
-    sheet_h=int(round(sheet_inches[1]*dpi))
-    sheet=Image.new("RGB",(sheet_w,sheet_h),"white")
-    draw=ImageDraw.Draw(sheet)
-    cols=sheet_w//unit_w
-    rows=sheet_h//unit_h
-    for r in range(rows):
-        for c in range(cols):
-            x=c*unit_w
-            y=r*unit_h
-            sheet.paste(single_img,(x,y))
-            draw.rectangle([x+0.5,y+0.5,x+unit_w-0.5,y+unit_h-0.5], outline=(120,120,120), width=1)
-    return sheet
+def draw_overlay(img, left, top, right, bottom):
+    overlay = img.copy()
+    draw = ImageDraw.Draw(overlay)
+    draw.rectangle([left, top, right, bottom], outline=(255,0,0), width=3)
+    return overlay
 
 # ---------------- Main ----------------
 if uploaded is not None:
     original = Image.open(uploaded).convert("RGB")
+    original = resize_large(original)
+    w, h = original.size
 
-    # Resize large images for faster processing
-    max_dim = 1200
-    if max(original.size) > max_dim:
-        scale = max_dim / max(original.size)
-        new_w = int(original.width * scale)
-        new_h = int(original.height * scale)
-        original = original.resize((new_w, new_h), Image.LANCZOS)
+    st.subheader("Original Photo with Crop Overlay")
 
-    st.subheader("Original")
-    st.image(original, use_column_width=True)
+    # Initialize sliders
+    col1, col2 = st.columns(2)
 
-    # AI passport photo
-    st.header("AI Passport Photo (630x810 px)")
-    face = detect_face(original)
-    if face is None:
-        st.error("Face not detected. Use manual crop.")
-    else:
-        st.write(f"Face detected at: {face}")
-        beard_flag = (photo_type=="With Beard")
-        cropped = ai_crop(original, face, subject_type, beard_flag)
-        bg_removed = grabcut_bg(cropped, face)
-        enhanced = enhance(bg_removed)
-        final_ai = enhanced.resize((630,810), Image.LANCZOS)
-        final_ai = add_border(final_ai)
-        st.image(final_ai,caption="AI Passport Photo")
-        buf=io.BytesIO(); final_ai.save(buf,"JPEG",quality=95)
-        st.download_button("Download AI Passport Photo (630x810)", buf.getvalue(), file_name="passport_ai_630x810.jpg", mime="image/jpeg")
+    with col1:
+        left = st.slider("Left", 0, w-1, 0)
+        top = st.slider("Top", 0, h-1, 0)
+        right = st.slider("Right", left+1, w, w)
+        bottom = st.slider("Bottom", top+1, h, h)
 
-    # Manual crop
-    st.header("Manual Crop Tool")
-    manual = manual_crop(original)
-    if manual:
-        manual_resized = manual.resize((630,810), Image.LANCZOS)
-        buf2=io.BytesIO(); manual_resized.save(buf2,"JPEG",quality=95)
-        st.download_button("Download Manual Crop (630x810)", buf2.getvalue(), file_name="manual_630x810.jpg", mime="image/jpeg")
+    # Draw live rectangle overlay
+    overlay_img = draw_overlay(original, left, top, right, bottom)
+    st.image(overlay_img, use_column_width=True)
 
-        # 2x2 inch option @300 DPI
-        manual_2x2 = manual.resize((600,600), Image.LANCZOS)
-        buf3=io.BytesIO(); manual_2x2.save(buf3,"JPEG",dpi=(300,300),quality=95)
-        st.download_button("Download Manual Crop (2×2 inch @300 DPI)", buf3.getvalue(), file_name="manual_2x2_300dpi.jpg", mime="image/jpeg")
+    # Apply crop with white background
+    cropped_with_bg = apply_crop_with_white(original, left, top, right, bottom)
+    # Resize to passport size
+    final = cropped_with_bg.resize((630,810), Image.LANCZOS)
+    final = add_border(final)
 
-    # 4x6 print sheet
-    if make_sheet:
-        st.header("4×6 Print Sheet")
-        unit_img = final_ai if 'final_ai' in locals() else manual_resized
-        sheet = generate_sheet(unit_img, 630,810, sheet_inches=(4,6), dpi=dpi)
-        st.image(sheet, caption="4×6 sheet preview", use_column_width=True)
-        buf_sheet=io.BytesIO(); sheet.save(buf_sheet,"JPEG",dpi=(dpi,dpi),quality=95)
-        st.download_button("Download 4×6 Print Sheet", buf_sheet.getvalue(), file_name="print_sheet_4x6.jpg", mime="image/jpeg")
+    with col2:
+        st.subheader("Cropped Passport Photo (630×810 px)")
+        st.image(final, use_column_width=True)
+        buf = io.BytesIO()
+        final.save(buf, "JPEG", quality=95)
+        st.download_button("Download Cropped Photo", buf.getvalue(), file_name="passport_manual_630x810.jpg", mime="image/jpeg")
