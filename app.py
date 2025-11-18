@@ -20,7 +20,7 @@ def resize_large(img, max_dim=1200):
         scale = max_dim / max(img.size)
         new_w = int(img.width * scale)
         new_h = int(img.height * scale)
-        return img.resize((new_w,new_h), Image.LANCZOS)
+        return img.resize((new_w, new_h), Image.LANCZOS)
     return img
 
 def add_border(img, color=(120, 120, 120), width=1):
@@ -35,7 +35,6 @@ def flashy_background(img, subject_type):
     arr = np.array(img)
     h, w = arr.shape[:2]
     bg_color = np.full_like(arr, color, dtype=np.uint8)
-    # For women, preserve top 25% (hair) as original
     preserve = h//4 if subject_type=="Woman" else 0
     mask = np.zeros((h,w), dtype=np.uint8)
     mask[preserve:, :] = 1
@@ -47,6 +46,17 @@ def enhance(img):
     img = ImageOps.autocontrast(img, cutoff=1)
     img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
     return img
+
+def auto_crop(img, subject_type):
+    """Simulate automatic AI crop: center top 25% to bottom of neck"""
+    w,h = img.size
+    top = h//6  # start a bit below top
+    bottom = int(h*0.85)  # leave some space below chin
+    left = w//6
+    right = int(w*5/6)
+    if subject_type=="Woman":
+        top = 0  # preserve hair fully
+    return left, top, right, bottom
 
 def draw_overlay(img, left, top, right, bottom):
     overlay = img.copy()
@@ -67,27 +77,31 @@ if uploaded:
     original = resize_large(original)
     w,h = original.size
 
-    st.subheader("Original Photo with Crop Overlay")
+    st.subheader("Original Photo")
+
+    # Auto crop coordinates
+    auto_left, auto_top, auto_right, auto_bottom = auto_crop(original, subject_type)
+
+    # Allow manual adjustments with sliders
     col1, col2 = st.columns(2)
 
     with col1:
-        left = st.slider("Left", 0, w-1, 0)
-        top = st.slider("Top", 0, h-1, 0)
-        right = st.slider("Right", left+1, w, w)
-        bottom = st.slider("Bottom", top+1, h, h)
+        st.subheader("Adjust Crop (Optional)")
+        left = st.slider("Left", 0, w-1, auto_left)
+        top = st.slider("Top", 0, h-1, auto_top)
+        right = st.slider("Right", left+1, w, auto_right)
+        bottom = st.slider("Bottom", top+1, h, auto_bottom)
 
     overlay_img = draw_overlay(original, left, top, right, bottom)
     st.image(overlay_img, use_column_width=True)
 
-    # Apply flashy background and enhance
+    # Apply flashy background + enhance
     if no_change:
         final = original
     else:
         bg_img = flashy_background(original, subject_type)
         enhanced = enhance(bg_img)
-        # Crop manually
         cropped = crop_with_white(enhanced, left, top, right, bottom)
-        # Resize to 630x810
         final = cropped.resize((630,810), Image.LANCZOS)
         final = add_border(final)
 
