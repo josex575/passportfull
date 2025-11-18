@@ -17,9 +17,6 @@ dpi = st.selectbox("DPI for print", [300, 350, 400], index=0)
 make_sheet = st.checkbox("Generate 4×6 print sheet", value=True)
 
 # ---------------- Helpers ----------------
-def mm_to_px(mm, dpi):
-    return int(round(mm/25.4*dpi))
-
 def pil_to_cv(img):
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
@@ -30,9 +27,9 @@ def detect_face(img):
     gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-    if len(faces)==0:
+    if len(faces) == 0:
         return None
-    return max(faces, key=lambda r:r[2]*r[3])
+    return max(faces, key=lambda r: r[2]*r[3])
 
 def ai_crop(img, face_box, subject_type, beard=False):
     x,y,w,h = face_box
@@ -58,18 +55,26 @@ def ai_crop(img, face_box, subject_type, beard=False):
 def grabcut_bg(img, face_box):
     arr = np.array(img.convert("RGB"))
     h,w = arr.shape[:2]
-    fx,fy,fw,fh = face_box
-    pad_x=int(fw*0.9); pad_y_top=int(fh*1.0); pad_y_bottom=int(fh*1.2)
-    rect=(max(0,fx-pad_x), max(0,fy-pad_y_top), min(w-1,fx+fw+pad_x)-max(0,fx-pad_x), min(h-1,fy+fh+pad_y_bottom)-max(0,fy-pad_y_top))
+    fx, fy, fw, fh = face_box
+    pad_x = int(fw*0.9)
+    pad_y_top = int(fh*1.0)
+    pad_y_bottom = int(fh*1.2)
+    rect = (max(0, fx-pad_x), max(0, fy-pad_y_top),
+            min(w-1, fx+fw+pad_x)-max(0, fx-pad_x),
+            min(h-1, fy+fh+pad_y_bottom)-max(0, fy-pad_y_top))
     mask = np.zeros(arr.shape[:2], np.uint8)
-    bgd = np.zeros((1,65), np.float64); fgd = np.zeros((1,65), np.float64)
-    try: cv2.grabCut(arr,mask,rect,bgd,fgd,5,cv2.GC_INIT_WITH_RECT)
-    except: return Image.new("RGB", img.size, "white")
-    mask2 = np.where((mask==2)|(mask==0),0,1).astype('uint8')
-    mask_f = cv2.GaussianBlur(mask2.astype(np.float32),(7,7),0)[...,np.newaxis]
-    white_bg = np.ones_like(arr)*255
-    comp = (arr*mask_f + white_bg*(1-mask_f)).astype(np.uint8)
-    return Image.fromarray(comp)
+    bgd = np.zeros((1,65), np.float64)
+    fgd = np.zeros((1,65), np.float64)
+    try:
+        cv2.grabCut(arr, mask, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
+        mask2 = np.where((mask==2)|(mask==0),0,1).astype('uint8')
+        mask_f = cv2.GaussianBlur(mask2.astype(np.float32),(7,7),0)[...,np.newaxis]
+        white_bg = np.ones_like(arr)*255
+        comp = (arr*mask_f + white_bg*(1-mask_f)).astype(np.uint8)
+        return Image.fromarray(comp)
+    except Exception as e:
+        st.warning("Background removal failed. Returning original with white background.")
+        return Image.new("RGB", img.size, "white")
 
 def enhance(img):
     img = ImageOps.autocontrast(img,cutoff=1)
@@ -77,7 +82,8 @@ def enhance(img):
     return img
 
 def add_border(img,color=(120,120,120),width=1):
-    draw = ImageDraw.Draw(img); w,h=img.size
+    draw = ImageDraw.Draw(img)
+    w,h = img.size
     draw.rectangle([0.5,0.5,w-0.5,h-0.5], outline=color, width=width)
     return img
 
@@ -93,12 +99,16 @@ def manual_crop(img):
     return cropped
 
 def generate_sheet(single_img, unit_w, unit_h, sheet_inches=(4,6), dpi=300):
-    sheet_w=int(round(sheet_inches[0]*dpi)); sheet_h=int(round(sheet_inches[1]*dpi))
-    sheet=Image.new("RGB",(sheet_w,sheet_h),"white"); draw=ImageDraw.Draw(sheet)
-    cols=sheet_w//unit_w; rows=sheet_h//unit_h
+    sheet_w=int(round(sheet_inches[0]*dpi))
+    sheet_h=int(round(sheet_inches[1]*dpi))
+    sheet=Image.new("RGB",(sheet_w,sheet_h),"white")
+    draw=ImageDraw.Draw(sheet)
+    cols=sheet_w//unit_w
+    rows=sheet_h//unit_h
     for r in range(rows):
         for c in range(cols):
-            x=c*unit_w; y=r*unit_h
+            x=c*unit_w
+            y=r*unit_h
             sheet.paste(single_img,(x,y))
             draw.rectangle([x+0.5,y+0.5,x+unit_w-0.5,y+unit_h-0.5], outline=(120,120,120), width=1)
     return sheet
@@ -106,6 +116,15 @@ def generate_sheet(single_img, unit_w, unit_h, sheet_inches=(4,6), dpi=300):
 # ---------------- Main ----------------
 if uploaded is not None:
     original = Image.open(uploaded).convert("RGB")
+
+    # Resize large images for faster processing
+    max_dim = 1200
+    if max(original.size) > max_dim:
+        scale = max_dim / max(original.size)
+        new_w = int(original.width * scale)
+        new_h = int(original.height * scale)
+        original = original.resize((new_w, new_h), Image.LANCZOS)
+
     st.subheader("Original")
     st.image(original, use_column_width=True)
 
@@ -115,6 +134,7 @@ if uploaded is not None:
     if face is None:
         st.error("Face not detected. Use manual crop.")
     else:
+        st.write(f"Face detected at: {face}")
         beard_flag = (photo_type=="With Beard")
         cropped = ai_crop(original, face, subject_type, beard_flag)
         bg_removed = grabcut_bg(cropped, face)
