@@ -1,6 +1,5 @@
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps, ImageFilter
-import cv2
 import numpy as np
 import io
 
@@ -24,33 +23,26 @@ def resize_large(img, max_dim=1200):
         return img.resize((new_w,new_h), Image.LANCZOS)
     return img
 
-def detect_face(img):
-    """Detect face using OpenCV"""
-    gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-    if len(faces)==0:
-        return None
-    return max(faces, key=lambda r: r[2]*r[3])
+def add_border(img, color=(120, 120, 120), width=1):
+    draw = ImageDraw.Draw(img)
+    w,h = img.size
+    draw.rectangle([0.5, 0.5, w-0.5, h-0.5], outline=color, width=width)
+    return img
 
-def change_background(img, color=(255, 0, 255)):
-    """Change background to flashy color using GrabCut"""
-    arr = np.array(img.convert("RGB"))
+def flashy_background(img, color=(255,0,255)):
+    """Simple flashy background by filling corners and edges"""
+    arr = np.array(img)
     h, w = arr.shape[:2]
-    mask = np.zeros(arr.shape[:2], np.uint8)
-    bgd = np.zeros((1,65), np.float64)
-    fgd = np.zeros((1,65), np.float64)
-    rect = (10,10,w-10,h-10)
-    try:
-        cv2.grabCut(arr, mask, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
-        mask2 = np.where((mask==2)|(mask==0),0,1).astype('uint8')
-        mask_f = cv2.GaussianBlur(mask2.astype(np.float32),(7,7),0)[...,np.newaxis]
-        flashy_bg = np.ones_like(arr)*np.array(color, dtype=np.uint8)
-        comp = (arr*mask_f + flashy_bg*(1-mask_f)).astype(np.uint8)
-        return Image.fromarray(comp)
-    except:
-        st.warning("Background replacement failed. Returning original")
-        return img
+    bg_color = np.full_like(arr, color, dtype=np.uint8)
+    # Create mask for center rectangle (keep original)
+    mask = np.zeros((h,w), dtype=np.uint8)
+    margin_w = w//3
+    margin_h = h//3
+    mask[margin_h:h-margin_h, margin_w:w-margin_w] = 1
+    mask = mask[:,:,np.newaxis]
+    # Blend background
+    blended = arr*mask + bg_color*(1-mask)
+    return Image.fromarray(blended.astype(np.uint8))
 
 def enhance(img):
     img = ImageOps.autocontrast(img, cutoff=1)
@@ -69,17 +61,12 @@ if uploaded is not None:
         st.subheader("No Changes Applied")
         final_img = original
     else:
-        face = detect_face(original)
-        if face is None:
-            st.warning("Face not detected. Editing may be inaccurate.")
-            final_img = original
-        else:
-            # Determine flashy color based on subject type
-            color_map = {"Man": (0,255,255), "Woman": (255,105,180), "Baby": (255,255,0)}
-            color = color_map.get(subject_type, (255,0,255))
+        # Determine flashy color based on subject type
+        color_map = {"Man": (0,255,255), "Woman": (255,105,180), "Baby": (255,255,0)}
+        color = color_map.get(subject_type, (255,0,255))
 
-            edited = change_background(original, color=color)
-            final_img = enhance(edited)
+        edited = flashy_background(original, color=color)
+        final_img = enhance(edited)
 
     st.subheader("Edited Photo Preview")
     st.image(final_img, use_column_width=True)
